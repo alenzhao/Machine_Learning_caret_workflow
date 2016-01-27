@@ -1,0 +1,478 @@
+## Caret Generic Workflow  
+Author:    Neal Cariello  
+Purpose:   Develop Generic Workflow For Caret Package To Examine Multiple ML Methods   
+Code path on Cariello machine: C:\\Google Drive\\R\\caret\\Generic Caret Workflow  
+Code Version Date: 2015_11_12
+
+### Initially use the segmentationData included in caret package as the default data to make sure the code runs for you.
+### After that, then substitute your own data.
+
+This code is loosely based on "Predictive Modeling with R and the caret package" in useR! 2013 by Max Kuhn
+
+## General caret and machine learning info
+Package caret: http://topepo.github.io/caret/index.html  
+R taskview on machine learning: http://cran.r-project.org/web/views/MachineLearning.html  
+
+#### Tasks
+* Load data.
+* Set up for parallel processing (or not).
+* Examine variance and correlations between variables for possible variable deletion.
+* Select machine learning models to be run.
+* Select the tuning parameter and the resampling method.
+
+## The recommendation is to initially NOT run the code with parallel processors.
+### If the code runs OK without parallel processors, then try to boost performance by running parallel threads.
+
+## There can be problems using multi-cores, which can affect train(). It seems to be something about setting seeds while parallel processing.
+###   See http://stackoverflow.com/questions/31690543/caret-error-in-train-defaultx-y-weights-w-final-tuning-parameters
+
+#### It is recommended to update to the latest R version and update all packages
+#### Depending on your machine you may have to add alot of packages
+
+
+```{r, Functons, Get Data and Clean Up Data}
+
+# clear the decks.
+rm(list=ls(all=TRUE))
+
+DATE <- "2015_11_12"
+
+DRIVE_LETTER <- "C:\\"   # at work
+# DRIVE_LETTER <- "F:\\"   # at home
+
+# path to save Rdata with fitted models
+PATH_FITTED_MODELS <- paste0(DRIVE_LETTER, "Google Drive\\R\\caret\\Generic Caret Workflow\\")
+
+RUN_PARALLEL <- FALSE
+
+programStartTime <- Sys.time()
+set.seed(123)
+
+require(caret)
+require(ggplot2)
+require(corrplot)     # for examination of variable correlations
+require(doParallel)   # for parallel computing
+require(DMwR)         # for down-sampling method using SMOTE
+
+# See warnings about parallel processes
+if (RUN_PARALLEL) {
+# Use multi-core support
+    require(doParallel)   # for parallel computing
+    require(memuse)       # memory stats
+    registerDoParallel()
+    getDoParWorkers()
+    Sys.meminfo()
+}
+
+sessionInfo()
+packageVersion("caret")
+
+# set to FALSE to use your own data and load it as dataRaw
+USE_SEGMENTATION_DATA_IN_CARET <- TRUE
+#  USE_SEGMENTATION_DATA_IN_CARET <- FALSE
+
+# IMPORTANT - if not using the "segmentationData" in caret
+#   your df must be named "dataRaw" and the single classifier must be named "Class"
+
+if (USE_SEGMENTATION_DATA_IN_CARET) {
+  # segmentationData dataset is provided in caret
+  data(segmentationData)
+  dataRaw <- segmentationData
+  # get rid of the cell identifier as suggested by Kuhn
+  dataRaw$Cell <- NULL
+  # also delete "Case", snce this df already has Test/Train pre-set which we are not going to use.
+  dataRaw$Case <- NULL
+}
+
+dim(dataRaw)
+names(dataRaw)
+dataRaw[1:8, 1:8]
+
+# check for NAs which can be a big hassle in ML programs
+
+if(anyNA(dataRaw)) {
+  print("There are NAs in this dataset")
+  rowHasNA<- apply(dataRaw, 1, function(x){any(is.na(x))})
+  print("Row(s) with NA:")
+  rowNumberNA <- which(rowHasNA)
+  rowNumberNA
+  
+  print("Column(s) of rows with NA")
+  rowContents <- dataRaw[rowNumberNA ,]
+  colHasNA <- which(is.na(rowContents))
+
+  rowContents
+
+} else {
+    print("No NAs in this dataset")
+}
+
+# Check for variables with near zero variance
+# Data needs to be ALL NUMERIC, adjust for your data by removing character variables
+# Remvove Class column
+temp <- subset(dataRaw, select = -c(Class))
+
+# nearZeroVar returns the number of near zero variance cols
+# These variables should be considered for elimination.
+
+# From documentation:
+# nearZeroVar diagnoses predictors that have one unique value (i.e. are zero variance predictors) 
+# or predictors that are have both of the following characteristics: they have very few unique values relative 
+# to the number of samples and the ratio of the frequency of the most common value to the frequency of the 
+# second most common value is large. 
+
+nzv <- nearZeroVar(temp)  
+print("Column numbers for variables with near zero variance are:")
+nzv
+
+if (length(nzv > 0) ) {
+    print("Variable names with near zero variarance are:")
+    names(temp)[nzv]
+} else { 
+    print("No variables with near zero variance.")
+}
+
+# Look at variable distribution in each Class
+# This code will probably only work for Categorical predictions.
+
+featurePlot(temp, dataRaw$Class, "strip")
+
+# Examine highly correlated variables for possible exclusion using hierarchical clustering.
+# Again, data needs to be all numeric.
+
+# Nice example of corrplot.mixed at  https://rpubs.com/flyingdisc/practical-machine-learning-xgboost
+# It's pretty but I'm not using it :)
+
+# Can export plot as PNG or PDF
+# mar - numerical vector indicating margin size c(bottom, left, top, right) in lines. 
+# NEEDS IMPROVEMENT - long axis labels can get chopped off
+
+# corrplot.mixed(cor(temp), lower="circle", upper="number", 
+#                mar = c(1, 4, 4, 1),
+#                tl.cex=0.3,     # size of labels
+#                cex.main=0.5,   # title text size
+#                tl.pos="lt", 
+#                diag="n", 
+#                title=paste("Correlations of", length(names(temp)), "variables in the dataset"),
+#                order="hclust", hclust.method="ward")
+
+corrplot(cor(temp), 
+         order="hclust",
+         hclust.method="ward",
+         mar = c(1, 3, 4, 1),
+         title=paste("Correlations of", length(names(temp)), "variables in dataset"),
+         tl.cex = 0.3,     # labels text size
+         cex.main=1         # title text size
+)
+
+
+# Again looking for variables to exclude
+# From documentation for findCorrelation:
+
+#   The absolute values of pair-wise correlations are considered. If two variables have a high correlation, the
+#     function looks at the mean absolute correlation of each variable and removes the variable with the largest
+#     mean absolute correlation.
+
+#   Using exact = TRUE will cause the function to re-evaluate the average correlations 
+#     at each step while exact = FALSE uses all the correlations regardless of whether 
+#     they have been eliminated or not. The exact calculations will remove a smaller 
+#     number of predictors but can be much slower when the problem dimensions are "big".
+
+print("Highly correlated variables are")
+findCorrelation(cor(temp), cutoff=0.99, names=TRUE, verbose=TRUE, exact=TRUE)
+
+# No variables removed in this example
+# If columns are to be removed, it must be done in dataRaw dataframe
+print("Delete columns here")
+
+# IMPORTANT - df for next code segment must be "dataCleanRemoveCols"
+dataCleanRemoveCols <- dataRaw
+str(dataCleanRemoveCols)
+
+```
+
+
+
+
+# The function ModelFit() uses the train() function to estimate performance of training set
+
+# Class or numeric data to be predicted in default dataset is in trainingData$Class
+# Only need to pass in a valid ML method.
+# Change defaults as you see fit
+
+```{r define functions}
+
+ModelFit <- function(MLtype, dataIn=trainingData, metricType="ROC", tuner=10, 
+                     trControlParams=trn_ctl, ...) {
+  
+  startTime <- Sys.time()
+  print(paste("Starting", MLtype, "at", Sys.time()), quote=FALSE)
+  
+  fitData <- train(Class ~.                     ,
+                   method          = MLtype     ,
+                   data            = dataIn     ,
+                   metric          = metricType ,
+                   tuneLength      = tuner      ,
+                   trControl       = trControlParams
+                   )
+  
+  endTime <- Sys.time()
+  print(paste("Time to run", MLtype))
+  print(endTime - startTime)
+  
+  return(fitData)
+}
+
+
+# The function trainControl is used to specifiy the type of resampling:
+
+fitControl <- trainControl(method       = "repeatedcv",
+                        repeats         = 10,
+                        number          = 10,
+                        classProbs      = TRUE,               # necessary to get confusion matrix
+                        summaryFunction = twoClassSummary     # necessary to get confusion matrix
+)   
+
+```    
+
+```
+
+## Scale, transform and impute data
+
+This may not be necessary for your data  
+The dataframe must be named dataCleanRemoveCols at this point.
+
+```{r, scale and transform data}
+
+# Run this chunk ?
+RUN_SCALING <- FALSE
+# RUN_SCALING <- TRUE
+
+# dataframe dataCleanRemoveCols is needed in this chunk
+
+# See caret documentation for up-to-date documentation for methods.
+
+# Methods available now are "Box-Cox", "YeoJohnson", "expoTrans", "center", "scale", "range", "knnImpute", "bag-Impute",
+# "medianImpute", "pca", "ica" and "spatialSign"
+
+# Note imputation methods above
+
+
+#  >>>>>>>>>>>>>>> IMPORTANT - df must be all numeric for scaling, so you may need to modify your data  <<<<<<<<<<<<<<
+# centering and scaling are pretty standard. modify as you see fit
+
+if(RUN_SCALING) {
+  dataPreProc <- preProcess(dataCleanRemoveCols, method = c("center", "scale"))
+  print("Scaling applied")
+}
+
+if(!RUN_SCALING) {
+  dataPreProc <- dataCleanRemoveCols
+  print("No scaling applied")
+}
+
+# dataframe name to next chunk MUST BE named dataPreProc
+
+```
+
+##  Create training and test datasets  
+Input dataframe must be named dataPreProc
+
+```{r, createDataPartion}
+
+# dataframe in for this chunk must be named dataPreProc
+# For caret example, "Class" is what we are trying to predict and you should name your predictor column as "Class"
+# Get training and test sets here.
+
+inTrain <- createDataPartition(dataPreProc$Class,
+                p = 0.75,    # 75% of data in training set
+                list=FALSE)  # output is set of integers for the rows now in the training set
+
+trainingData <- dataPreProc[  inTrain ,]
+# testing is the data not in the training set
+testingData  <- dataPreProc[ -inTrain ,]  
+
+# Class is what we are trying to predict
+trainingClass <- trainingData$Class
+testingClass  <- testingData$Class
+
+dim(trainingData)
+dim(testingData)
+
+# Look at class imbalance 
+print("Check imbalance in variable that we are trying to predict.", quote=FALSE)
+table(dataPreProc$Class)
+
+```
+## Setup trainControl  
+Change to your liking  
+
+As of June 30 2015, the following methods exist for TrainControl  
+"boot", "cv", "LOOCV", "LGOCV", "repeatedcv", "timeslice", "none" and "oob"
+
+```{r, train_control}
+
+trn_ctl <- trainControl(method          = "repeatedcv",
+                        repeats         = 5,
+                        number          = 10,
+                        classProbs      = TRUE,               # necessary to get confusion matrix
+                        summaryFunction = twoClassSummary     # necessary to get confusion matrix
+                        )   
+                
+
+```
+
+## Run models using train()
+The train() function sets up a grid of tuning parameters for a number of classification and regression  
+routines, fits each model and calculates a resampling based performance measure.  
+
+
+### Different parameters can be passed into the train() ModelFit function thus overriding the defaults.  
+#### The function ModelFit requires only a valid ML method to run, this is where you pick the ML methods to run.  
+##### IMPORTANT: lists are used to capture all the models in a single data structure.  
+Naive Bayes (nb) produces many warnings, see 
+http://r.789695.n4.nabble.com/klaR-package-NaiveBayes-warning-message-numerical-0-probability-td3025567.html
+
+
+```{r, run models}
+
+# Using segmentationData in caret package.
+# Run time is on a 64-bit Win 7 machine with 32G RAM with 8 cores.  The processor is Intel i7-4700MQ @ 2.7GHz.
+
+# AdaBag          5.1   HOURS !!  
+# glm             13    sec   # Generalized Linear Model
+# nb              39    sec   # Naive Bayes
+# nnet            20.5  min   # Neural Network
+# rf              8.2   min   # Random Forest
+# rpart           8     sec   # CART
+# svmRadial       21.8  min   # Support Vector Machines with Radial Basis Function Kernel
+
+# Only picking fast methods here for demonstration.
+# This is where you select the machine learning methods you want to try, see
+#     http://topepo.github.io/caret/modelList.html
+
+MLmethods <- c("pam", "rpart")
+
+# >>>>>>>>>>>>>  A LIST IS PRODUCED   <<<<<<<<<<<<<<<<<<<
+
+overallStartTime <- Sys.time()
+
+modelsFittedList <- lapply(1 : length(MLmethods), function(i) {
+                      temp <- ModelFit(MLmethods[i])
+                      
+                      print(paste0(MLmethods[i], "Fit created"), quote=FALSE)
+                      print("-------------------------------------------")                               
+                      return(temp)
+  }
+)
+
+
+overallEndTime <- Sys.time()
+print(paste("Overall time to run", length(MLmethods), "models:"))
+overallEndTime - overallStartTime
+
+# Only look at first model
+attributes(modelsFittedList[[1]])
+print(modelsFittedList[[1]])
+
+# Save modelsFittedList to disk so don't have to run it all again.
+
+setwd(PATH_FITTED_MODELS) 
+NUM_MODELS <- length(MLmethods)
+
+save(modelsFittedList, file = paste0("Models_", NUM_MODELS, "_Fitted_", DATE, ".RData"))
+
+``` 
+
+### ROC Plots And Differences Between Models Using Training Data
+
+```{r, plots}
+
+# Note the list syntax here, it is [] and not [[]]
+compareModels <- resamples( modelsFittedList[1 : length(MLmethods)], modelNames = MLmethods ,
+                            decreasing=TRUE)
+
+# Box and whiskers plot
+bwplot(compareModels)
+
+# The names of the different ML methods are not given in the plot so can't tell which is which.
+# Maybe fix this later.
+densityplot(compareModels)
+
+# Statistical differences between models
+diffsModels <- diff(compareModels) 
+summary(diffsModels)
+
+```
+
+### Performance on Testing Data
+
+```{r, Performance On Testing Set}
+ 
+# Evaluate the performance of the testing set using the function predict()
+# Again a list is procuced
+
+# You may get many warnings if you run "nb" which is Naive Bayes.  This is discussed at
+#   http://r.789695.n4.nabble.com/klaR-package-NaiveBayes-warning-message-numerical-0-probability-td3025567.html
+# Fewer warnings produced with other methods :)  
+
+predictionTestDataList <- lapply(1 : length(MLmethods), function(i) {
+                              temp <- predict(modelsFittedList[[i]] , newdata = testingData)
+                              return(temp)
+  }
+)
+
+
+confusionMatrixnTestDataList <- lapply(1 : length(MLmethods), function(i) {
+                                temp <- confusionMatrix(predictionTestDataList[[i]] , 
+                                                        testingData$Class)
+                                return(temp)
+  }
+)
+
+#  Hmm, I don't see a place for the ML name. Need to iterate over this, don't see how to vectorize it.
+
+for(i in 1 : length(MLmethods)) { 
+    print(paste("--------------------------  ",  MLmethods[i], "  ---------------------------------"), quote=FALSE)
+    print(paste("Machine Learning Method:", MLmethods[i]), quote=FALSE)
+    print(confusionMatrixnTestDataList[[i]]) 
+    print(paste("=====  SUMMARY:", MLmethods[i], "  ====="), quote=F)  
+    print(confusionMatrixnTestDataList[[i]]$overall)
+ }
+
+
+```
+
+
+
+### Fooling around with SMOTE method for rectifying severe class imbalance 
+### use down-sampling using SMOTE in DMwR package  
+### >>>>>>>>>>>>>>  THIS PART IS NOT DONE  <<<<<<<<<<<<<<<<<<<<<
+Need to evaluate performance, generate confusion matrices, etc
+
+```{r, eval=TRUE}
+
+print("Check imbalance in variable that we are trying to predict", quote=FALSE)
+table(dataPreProc$Class)
+
+smoteTrain <- SMOTE(Class ~. , data=dataPreProc)
+
+# After SMOTE-ing
+dim(smoteTrain)
+table(smoteTrain$Class)
+
+# Produces a LIST
+
+smoteModelsFittedList <- lapply(1 : length(MLmethods), function(i) {
+                      temp <- ModelFit(MLmethods[i], dataIn=smoteTrain)
+                      
+                      print(paste0(MLmethods[i], " SMOTE Fit created"), quote=FALSE)
+                      print("-------------------------------------------")                               
+                      return(temp)
+  }
+)
+
+
+
+```
+

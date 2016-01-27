@@ -1,0 +1,328 @@
+# Caret Generic Workflow  
+Author:    Neal Cariello  
+Purpose:   Develop Generic Workflow For Caret Package To Examine Multiple ML Methods For Classification Datasets  
+Code path on Cariello machine: F:\\Google Drive\\R\\caret\\Generic Caret Workflow  
+Date: 2015_07_04
+
+This R Markdown code is loosely based on "Predictive Modeling with R and the caret package" in useR! 2013 by Max Kuhn
+
+
+## General caret and machine learning info
+Package caret: http://topepo.github.io/caret/index.html  
+R taskview on machine learning: http://cran.r-project.org/web/views/MachineLearning.html  
+
+## R and caret versions
+version 3.2.0 (2015-04-16) "Full of Ingredients"  
+Platform: x86_64-w64-mingw32/x64 (64-bit)  
+Running under: Windows 7 x64 (build 7601) Service Pack 1  
+caret version 6.0.47
+
+* The main model fitting function ( train() ) is defined here.
+* Load data.
+* Set up for parallel processing.
+* Examine variance and correlations between variables for possible variable deletion.
+
+### Using segmentationData included in caret package as default data
+
+
+```{r, Functons, Get Data and Clean Up Data}
+
+# clear the decks.
+rm(list=ls(all=TRUE))
+programStartTime <- Sys.time()
+set.seed(123)
+
+# The function ModelFit() uses the train() function to estimate performance of training set
+
+# Class data in default dataset is in trainingData$Class
+# Only need to pass in a valid ML method.
+# Change defaults as you see fit
+
+ModelFit <- function(MLtype, dataIn=trainingData, metricType="ROC", tuner=10, 
+                     trControlParams=trn_ctl, ...) {
+  
+  startTime <- Sys.time()
+  print(paste("Starting", MLtype, "at", Sys.time()), quote=FALSE)
+  
+  fitData <- train(Class ~.                     ,
+                   method          = MLtype     ,
+                   data            = dataIn     ,
+                   metric          = metricType ,
+                   tuneLength      = tuner      ,
+                   trControl       = trControlParams
+                   )
+  
+  endTime <- Sys.time()
+  print(paste("Time to run", MLtype))
+  print(endTime - startTime)
+  
+  return(fitData)
+}
+
+# set to FALSE to use your own data and load it as dataRaw
+USE_SEGMENTATION_DATA_IN_CARET <- TRUE
+#  USE_SEGMENTATION_DATA_IN_CARET <- FALSE
+
+require(caret)
+require(ggplot2)
+require(corrplot)     # for examination of variable correlations
+require(doParallel)   # for parallel computing
+
+# Use multi-core support
+registerDoParallel()
+getDoParWorkers()
+
+sessionInfo()
+packageVersion("caret")
+
+# segmentationData dataset is provided in caret
+data(segmentationData)
+dataRaw <- segmentationData
+
+print("Check imbalance in variable that we are trying to predict.", quotes=FALSE)
+table(dataRaw$Class)
+
+
+if (USE_SEGMENTATION_DATA_IN_CARET) {
+  # get rid of the cell identifier as suggested by Kuhn
+  dataRaw$Cell <- NULL
+}
+
+dim(dataRaw)
+names(dataRaw)
+str(dataRaw)
+dataRaw[1:8, 1:8]
+
+# Check for variables with near zero variance
+# Data needs to be all numeric 
+temp <- subset(dataRaw, select = -c(Case, Class))
+
+nzv <- nearZeroVar(temp)  # returns number of near zero variance cols
+if( length(nzv) == 0) {nzv <- 0}
+print(paste("Number of columns with near zero variance is: ", nzv), quote=FALSE)
+
+# Examine highly correlated variables for possible exclusion
+# Again, data needs to be all numeric
+
+correlations <- cor(temp)
+corrplot(correlations, 
+         order="hclust",
+         mar = c(3, 4, 1, 3),
+         title=paste("Correlations of", 
+                     length(names(temp)), "variables in dataset"),
+          tl.cex = 0.6,     # labels text size
+         cex.main=1         # title text size
+)
+
+# Change cutoff as you see fit
+highlyCorrelated <- findCorrelation(correlations, cutoff=0.9)
+print(paste("Highly correlated variables are:",   
+            names(temp)[highlyCorrelated])
+)
+
+# If columns are to be removed, it must be done in dataRaw dataframe
+print("Delete columns here")
+
+# IMPORTANT - df for next code segment must be "dataCleanRemoveCols"
+dataCleanRemoveCols <- dataRaw
+
+```
+
+## Scale, transform and impute data
+
+This may not be necessary for your data  
+dataCleanRemoveCols is dataframe required for this operation  
+
+```{r, scale and transform data}
+
+# Run this chunk ?
+RUN_SCALING <- FALSE
+# RUN_SCALING <- TRUE
+
+# dataframe dataCleanRemoveCols is needed in this chunk
+
+# See caret documentation for up-to-date documentation for methods.
+
+# Methods available now are "Box-Cox", "YeoJohnson", "expoTrans", "center", "scale", "range", "knnImpute", "bag-Impute",
+# "medianImpute", "pca", "ica" and "spatialSign"
+
+# Note imputation methods above
+
+
+#  >>>>>>>>>>>>>>> IMPORTANT - df must be all numeric for scaling, so you may need to modify your data  <<<<<<<<<<<<<<
+# centering and scaling are pretty standard. modify as you see fit
+
+if(RUN_SCALING) {
+  dataPreProc <- preProcess(dataCleanRemoveCols, method = c("center", "scale"))
+  print("Scaling applied")
+}
+
+if(!RUN_SCALING) {
+  dataPreProc <- dataCleanRemoveCols
+  print("No scaling applied")
+}
+# dataframe name to next chunk must be dataPreProc
+
+
+```
+
+##  Create training and test datasets
+### Input dataframe must be named dataCleanRemoveCols
+
+```{r, createDataPartion}
+
+# dataframe in for this chunk must be named dataCleanRemoveCols
+
+# NOTE that the segmentation data in the caret package already has the training and test sets defined, presumably for
+#   reproducibilty.  Training and test are in the variable "Case". Delete this column and proceed with the 
+#   creation of the Training and Test sets
+
+#  USING_CARET_SEGMENTATION_DATA <- FALSE
+USING_CARET_SEGMENTATION_DATA <- TRUE
+
+if (USING_CARET_SEGMENTATION_DATA) { dataCleanRemoveCols$Case <- NULL }
+
+# For caret example, "Class" is what we are trying to predict
+
+inTrain <- createDataPartition(dataCleanRemoveCols$Class,
+                p = 0.75,
+                list=FALSE)  # output is set of integers for the rows now in the training set
+
+trainingData <- dataCleanRemoveCols[  inTrain ,]
+testingData  <- dataCleanRemoveCols[ -inTrain ,]  
+
+trainingClass <- trainingData$Class
+testingClass  <- testingData$Class
+
+```
+
+
+## Setup trainControl  
+Change to your liking  
+
+As of June 30 2015, the following methods exist for TrainControl  
+"boot", "cv", "LOOCV", "LGOCV", "repeatedcv", "timeslice", "none" and "oob"
+
+```{r, train_control}
+
+trn_ctl <- trainControl(method          = "repeatedcv",
+                        repeats         = 5,
+                        number          = 10,
+                        classProbs      = TRUE,               # necessary to get confusion matrix
+                        summaryFunction = twoClassSummary     # necessary to get confusion matrix
+                        )   
+                
+
+```
+
+## Run models using train()
+The train() function sets up a grid of tuning parameters for a number of classification and regression  
+routines, fits each model and calculates a resampling based performance measure.  
+
+
+### Different parameters can be passed into the train() ModelFit function thus overriding the defaults.
+#### The function ModelFit requires only a valid ML method to run.
+##### IMPORTANT: lists are used to capture all the models in a single data structure.
+
+```{r, run models}
+
+# Use segmentationData in caret package.
+# Run time is on a 64-bit Win 7 machine with 32G RAM with 8 cores.  The processor is Intel i7-4700MQ @ 2.7GHz.
+
+# AdaBag          5.1   HOURS !!  
+# glm             13    sec   # Generalized Linear Model
+# nb              39    sec   # Naive Bayes
+# nnet            20.5  min   # Neural Network
+# rf              8.2   min   # Random Forest
+# rpart           8     sec   # CART
+# svmRadial       21.8  min   # Support Vector Machines with Radial Basis Function Kernel
+
+MLmethods <- c("AdaBag", "glm", "nb", "nnet", "rf",  "rpart", "svmRadial")
+
+# >>>>>>>>>>>>>  A LIST IS PRODUCED   <<<<<<<<<<<<<<<<<<<
+
+overallStartTime <- Sys.time()
+
+modelsFittedList <- lapply(1 : length(MLmethods), function(i) {
+                      temp <- ModelFit(MLmethods[i])
+                      
+                      print(paste0(MLmethods[i], "Fit created"), quote=FALSE)
+                      print("-------------------------------------------")                               
+                      return(temp)
+  }
+)
+
+overallEndTime <- Sys.time()
+print(paste("Overall time to run", length(MLmethods), "models:"))
+overallEndTime - overallStartTime
+
+
+attributes(modelsFittedList[[1]])
+print(modelsFittedList[[1]])
+
+# Save modelsFittedList to disk so don't have to run it all again.
+
+setwd("F:\\Google Drive\\R\\caret\\Generic Caret Workflow\\")
+NUM_MODELS <- length(MLmethods)
+DATE <- "2015_07_08"
+
+save(modelsFittedList, file = paste0("Models_", NUM_MODELS, "_Fitted_", DATE, ".RData"))
+
+``` 
+
+### ROC Plots And Differences Between Models Using Training Data
+
+```{r, plots}
+
+# Note the list syntax here, it is [] and not [[]]
+compareModels <- resamples( modelsFittedList[1 : length(MLmethods)], modelNames = MLmethods ,
+                            decreasing=TRUE)
+
+# Box and whiskers plot
+bwplot(compareModels)
+
+# The names of the different ML methods are not given in the plot so can't tell which is which.
+# Maybe fix this later
+densityplot(compareModels)
+
+# Statistical differences between models
+diffsModels <- diff(compareModels) 
+summary(diffsModels)
+
+```
+
+### Performance on Testing Data
+
+```{r, Performance On Testing Set}
+ 
+# Evaluate the performance of the testing set using the function predict()
+# Again a list is procuced
+
+# ACK - tons of warnings
+predictionTestDataList <- lapply(1 : length(MLmethods), function(i) {
+                              temp <- predict(modelsFittedList[[i]] , newdata = testingData)
+                              return(temp)
+  }
+)
+
+
+confusionMatrixnTestDataList <- lapply(1 : length(MLmethods), function(i) {
+                                temp <- confusionMatrix(predictionTestDataList[[i]] , 
+                                                        testingData$Class)
+                                return(temp)
+  }
+)
+
+#  Hmm, I don't see a place for the ML name. Need to iterate over this
+
+for(i in 1 : length(MLmethods)) { 
+    print(paste("--------------------------  ",  MLmethods[i], "  ---------------------------------"), quote=FALSE)
+    print(paste("Machine Learning Method:", MLmethods[i]), quote=FALSE)
+    print(confusionMatrixnTestDataList[[i]]) 
+    print(paste("=====  SUMMARY:", MLmethods[i], "  ====="), quote=F)  
+    print(confusionMatrixnTestDataList[[i]]$overall)
+ }
+
+
+```
+

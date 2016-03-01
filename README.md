@@ -6,5 +6,5 @@
     My code presents a generic caret workflow that can be easily adapated for a new dataset.  
     Features of my workflow include: 
     
-    *Reporting
+    * Reporting
 
